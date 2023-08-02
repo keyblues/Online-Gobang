@@ -4,14 +4,21 @@
 
 联机五子棋对战游戏，使用python编写。
 
-## 效果
+## 演示效果
 
+客户端首页
+![这是图片](./data/client.png "Magic Gardens")
+
+客户端在线列表
+![这是图片](./data/online.png "Magic Gardens")
+
+服务端
 ![这是图片](./data/server.png "Magic Gardens")
 
 ## 下载方式
 
 可执行文件：
-https://github.com/keyblues/LAN-Gobang/releases
+https://github.com/keyblues/Online-Gobang/releases
 
 源代码可clone使用，体积更小
 
