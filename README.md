@@ -17,18 +17,23 @@
 
 ## 下载方式
 
-可执行文件：
+克隆源码
+```commandline
+git clone https://github.com/keyblues/Online-Gobang.git
+```
+已打包完成的发行版
 https://github.com/keyblues/Online-Gobang/releases
 
-源代码可clone使用，体积更小
+其中，源码版体积更小启动更快，但需要配置python环境，相对麻烦。
+发行版使用pyinstaller打包，启动速度慢，胜在开箱即用。
 
 ## 游玩方法
 
-源代码版本使用前请安装相应的包
+对比局域网版本，online版分为server端和client端，其中server需要运行在独立的服务器上，源码版使用```python server.py```启动，打包版双击即可，
+随后启动client端，玩家使用client端进行全部游戏，需要注意的是，启动server端不需要安装额外的python库，源码版client端需要使用
+```pip install -r requirements.txt```来安装相应的包。
 
-```pip install -r requirements.txt```
-
-船新版本，两端合并，用同一个客户端就可以实现两端联机
+当然，我们提供了发行版，具体看上面的下载方式介绍
 
 本游戏可跨平台对战，例如linux端可和windows端对战
 
