@@ -69,7 +69,7 @@ def connect_game_windows(ips):
 
 
 def connect_game(root, ips):
-    global games, screen, game_receive_state, online_list_recv_state, online_list, game_color
+    global games, screen, game_receive_state, online_list_recv_state, online_list, game_color, game_receive_threading
     online_list_recv_state = True
     game_socket.connect_game(ips)
     time.sleep(1)
@@ -146,9 +146,7 @@ def online_list_recv():
 
 def game_receive():
     global game_receive_state, game_state
-    print("`````")
     recv_data = game_socket.receive()
-    print(recv_data, 'state')
     game.add_ops([[recv_data['x'], recv_data['y']], recv_data['color']])
     game_state = recv_data['game']
     # 接收到数据，将接收状态改为False
@@ -161,8 +159,8 @@ window_size = window_x, window_y = 800, 480
 screen = pygame.display.set_mode(window_size)
 pygame.display.set_caption('五子棋 LAN-Gobang v2.0')
 screen_color = [85, 81, 255]  # 设置在线列表画布颜色
-# 列表矩形(位置x,y, 宽, 高)
-bullet_rect = pygame.Rect(0, 0, 300, 50)
+
+game_receive_threading = threading.Thread(target=game_receive)
 
 # 选择指针坐标
 pointer_y = 120
@@ -299,7 +297,6 @@ while True:
 
                 if game_receive_state:
                     # 当game_receive_state为True时启动数据接收线程
-                    print("game_receive_threading.start()")
                     game_receive_threading = threading.Thread(target=game_receive)
                     game_receive_threading.daemon = True
                     game_receive_threading.start()
