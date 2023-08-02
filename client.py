@@ -191,7 +191,7 @@ text_white = font.render("你执白子", True, (255, 255, 255))
 text_black = font.render("你执黑子", True, (255, 255, 255))
 text_white_win = font.render("执白子胜！", True, (255, 255, 255))
 text_black_win = font.render("执黑子胜！", True, (255, 255, 255))
-test = 0
+
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
