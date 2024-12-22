@@ -1,173 +1,192 @@
-import socket
-import threading
-import time
+import asyncio
+import websockets
+import json
+from dataclasses import dataclass
+from typing import Dict, Set
 
-all_online = {}
-in_the_game = []
+@dataclass
+class Room:
+    id: str
+    players: Set[str]
+    game_state: dict
+    game_started: bool = False
 
-
-class Error:
-    NotOnline = {
-        'type': 'error',
-        'msg': '该用户现在不在线'
-    }
-    NotSend = {
-        'type': 'error',
-        'msg': '发送失败，用户已下线'
-    }
-
-
-def broadcast_message():
-    global all_online, in_the_game
-    while True:
-        time.sleep(1)
-        for client in list(all_online.keys()):
-            # 当主机数为1时，不发送
-            if len(all_online) == 1:
-                break
-            if client in in_the_game:
-                continue
-            # 删除它自己的ip
-            online = []
-            for client_ in list(all_online.keys()):
-                online.append(client_)
-            online.remove(client)
-            message = {
-                'type': 'online list',
-                'data': online
+class GameServer:
+    def __init__(self):
+        self.connections = {}
+        self.rooms = {
+            str(i): Room(
+                id=str(i),
+                players=set(),
+                game_state={'board': [[0]*15 for _ in range(15)], 'current_player': 1}
+            ) for i in range(1, 6)
+        }
+    
+    async def broadcast_room_status(self):
+        room_status = {
+            room_id: {
+                'player_count': len(room.players)
             }
+            for room_id, room in self.rooms.items()
+        }
+        
+        for websocket in self.connections.values():
             try:
-                all_online[client].send(str(message).encode())
+                await websocket.send(json.dumps({
+                    'action': 'room_status',
+                    'rooms': room_status
+                }))
             except:
-                # 发送失败，说明该客户端已断开连接，将其移出列表
-                all_online.pop(client, None)
-                print(f'err: send -> {client} : {Error.NotSend}list')
-
-
-def handle_client(client_socket, addr):
-    global all_online
-    native_url = f'{addr[0]}:{addr[1]}'
-    try:
-        while True:
-            data = client_socket.recv(1024)
-            if not data:
-                break
-            # 在这里处理客户端发送的数据
-            data = eval(data)
-            if data['type'] == 'challenge':
-                # 发起挑战
-                if data['url'] in all_online:
-                    # 如果被挑战者在在线名单里，就向它发送战书
-                    msg = {
-                        'type': "challenge",
-                        'challenger': native_url
+                pass
+    
+    async def handle_connection(self, websocket):
+        client_id = str(id(websocket))
+        self.connections[client_id] = websocket
+        print(f"New client connected: {client_id}")
+        
+        await self.broadcast_room_status()
+        
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    response = await self.handle_message(client_id, data)
+                    if response:
+                        await websocket.send(json.dumps(response))
+                except json.JSONDecodeError:
+                    print(f"Invalid JSON from client {client_id}")
+                except Exception as e:
+                    print(f"Error handling message from {client_id}: {str(e)}")
+        except websockets.exceptions.ConnectionClosed:
+            print(f"Client {client_id} connection closed")
+        finally:
+            await self.handle_disconnect(client_id)
+    
+    async def handle_message(self, client_id: str, data: dict):
+        action = data.get('action')
+        print(f"Handling action: {action} from client: {client_id}")
+        
+        if action == 'join_room':
+            room_id = data.get('room_id')
+            if room_id in self.rooms:
+                room = self.rooms[room_id]
+                if len(room.players) < 2:
+                    is_first = len(room.players) == 0  # 第一个玩家是黑方
+                    room.players.add(client_id)
+                    print(f"Player {client_id} joined room {room_id} as {'black' if is_first else 'white'}")
+                    await self.broadcast_room_status()
+                    
+                    # 发送加入成功消息给当前玩家
+                    response = {
+                        'action': 'join_success',
+                        'room_id': room_id,
+                        'is_first': is_first,
+                        'role': 'black' if is_first else 'white'
                     }
-                    try:
-                        all_online[data['url']].send(str(msg).encode())
-                        print(f'send -> {data["url"]} : {msg}')
-                    except:
-                        # 如果发送失败就输出错误
-                        all_online.pop(data['url'], None)
-                        client_socket.send(str(Error.NotSend).encode())
-                        print(f'err: send -> {data["url"]} : {msg}')
+                    
+                    # 如果房间满员，立即向双方发送游戏开始消息
+                    if len(room.players) == 2:
+                        room.game_started = True
+                        players = list(room.players)
+                        # 先单独发送游戏开始消息
+                        for i, pid in enumerate(players):
+                            await self.connections[pid].send(json.dumps({
+                                'action': 'game_start',
+                                'is_first': i == 0,
+                                'room_id': room_id
+                            }))
+                            print(f"Sent game_start to player {pid} as {'black' if i == 0 else 'white'}")
+                    
+                    return response
+            return {'action': 'join_failed'}
+        
+        elif action == 'exit_room':
+            room_id = data.get('room_id')
+            if room_id in self.rooms:
+                room = self.rooms[room_id]
+                if client_id in room.players:
+                    room.players.remove(client_id)
+                    room.game_started = False
+                    await self.broadcast_room_status()
+                    await self.broadcast_to_room(room_id, {
+                        'action': 'player_disconnected'
+                    })
+                    return {'action': 'exit_success'}
+        
+        elif action == 'move':
+            room_id = data.get('room_id')
+            x, y = data.get('x'), data.get('y')
+            if room_id in self.rooms:
+                room = self.rooms[room_id]
+                board = room.game_state['board']
+                current_player = room.game_state['current_player']
+                
+                if board[y][x] == 0:
+                    board[y][x] = current_player
+                    room.game_state['current_player'] = 3 - current_player
+                    await self.broadcast_to_room(room_id, {
+                        'action': 'move',
+                        'x': x,
+                        'y': y,
+                        'player': current_player
+                    })
+                    
+                    if self.check_winner(board, x, y, current_player):
+                        await self.broadcast_to_room(room_id, {
+                            'action': 'game_over',
+                            'winner': '黑棋' if current_player == 1 else '白棋'
+                        })
+                        room.game_started = False
+    
+    def check_winner(self, board, x, y, player):
+        directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
+        for dx, dy in directions:
+            count = 1
+            count += self.count_pieces(board, x, y, dx, dy, player)
+            count += self.count_pieces(board, x, y, -dx, -dy, player)
+            if count >= 5:
+                return True
+        return False
+    
+    def count_pieces(self, board, x, y, dx, dy, player):
+        count = 0
+        nx, ny = x + dx, y + dy
+        while 0 <= nx < len(board) and 0 <= ny < len(board) and board[ny][nx] == player:
+            count += 1
+            nx += dx
+            ny += dy
+        return count
+    
+    async def broadcast_to_room(self, room_id: str, message: dict, exclude=None):
+        """向房间内所有玩家广播消息"""
+        if room_id in self.rooms:
+            room = self.rooms[room_id]
+            for player_id in room.players:
+                if player_id != exclude and player_id in self.connections:
+                    await self.connections[player_id].send(json.dumps(message))
+    
+    async def handle_disconnect(self, client_id: str):
+        if client_id in self.connections:
+            del self.connections[client_id]
+        
+        for room in self.rooms.values():
+            if client_id in room.players:
+                room.players.remove(client_id)
+                await self.broadcast_room_status()
+                await self.broadcast_to_room(room.id, {
+                    'action': 'player_disconnected'
+                })
 
-                else:
-
-                    try:
-                        client_socket.send(str(Error.NotOnline).encode())
-                        print(f'send -> {native_url} : {Error.NotOnline}')
-                    except:
-                        print(f'err: send -> {native_url} : {Error.NotOnline}')
-
-            if data['type'] == 'Accept challenge' or data['type'] == 'Refuse challenge':
-
-                # 转发
-                if data['url'] in all_online:
-
-                    try:
-                        all_online[data['url']].send(str(data).encode())
-                        print(f'send -> {data["url"]} : {data}')
-                        if data['type'] == 'Accept challenge' and data['url'] not in in_the_game:
-                            in_the_game.append(data['url'])
-                            in_the_game.append(native_url)
-                    except:
-                        all_online.pop(data['url'], None)
-                        client_socket.send(str(Error.NotSend).encode())
-                        print(f'err: send -> {data["url"]} : {data}')
-
-                else:
-
-                    try:
-                        client_socket.send(str(Error.NotOnline).encode())
-                        print(f'send -> {native_url} : {Error.NotOnline}')
-                    except:
-                        print(f'err: send -> {native_url} : {Error.NotOnline}')
-
-            if data['type'] == 'game':
-                # 转发
-                if data['url'] in all_online:
-
-                    try:
-                        all_online[data['url']].send(str(data).encode())
-                        print(f'send -> {data["url"]} : {data}')
-                    except:
-                        all_online.pop(data['url'], None)
-                        client_socket.send(str(Error.NotSend).encode())
-                        print(f'err: send -> {data["url"]} : {data}')
-
-                else:
-
-                    try:
-
-                        client_socket.send(str(Error.NotOnline).encode())
-                        print(f'send -> {native_url} : {Error.NotOnline}')
-                    except:
-                        print(f'err: send -> {native_url} : {Error.NotOnline}')
-
-
-    except:
-        # 处理客户端断开连接或其他异常
-        if native_url in in_the_game and data['url'] in in_the_game:
-            in_the_game.remove(native_url)
-            in_the_game.remove(data['url'])
-        all_online.pop(native_url, None)
-        print(f'err: {native_url} : {Error.NotSend}end')
-
-
-def main():
-    global all_online
-    host = '127.0.0.1'
-    port = 45555
-
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host, port))
-    server.listen(5)
-
-    print("Server listening on {}:{}".format(host, port))
-
-    # 向其他客户端广播新连接的IP地址
-    broadcast_message_threading = threading.Thread(target=broadcast_message)
-    broadcast_message_threading.daemon = True
-    broadcast_message_threading.start()
-
-    try:
-        while True:
-            client_socket, addr = server.accept()
-            print("Accepted connection from {}:{}".format(addr[0], addr[1]))
-
-            # 将客户端连接加入字典
-            all_online.update({f"{addr[0]}:{addr[1]}": client_socket})
-            print(all_online)
-
-            # 启动一个新的线程来处理当前连接的客户端
-            client_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
-            client_thread.start()
-    except KeyboardInterrupt:
-        print("Server is shutting down...")
-        for client_socket in all_online:
-            all_online[client_socket].close()
-        server.close()
-
+async def main():
+    server = GameServer()
+    async with websockets.serve(
+        server.handle_connection,
+        "localhost",
+        8765,
+        ping_interval=None
+    ) as websocket_server:
+        print("Server started on ws://localhost:8765")
+        await asyncio.Future()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
